@@ -28,9 +28,17 @@ import org.sqlite.util.OSInfo;
 
 import java.io.*;
 import java.net.URL;
+import java.nio.file.FileVisitOption;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.EnumSet;
 import java.util.Properties;
 import java.util.UUID;
 
@@ -68,33 +76,39 @@ public class SQLiteJDBCLoader {
     private static File getTempDir() {
         return new File(System.getProperty("org.sqlite.tmpdir", System.getProperty("java.io.tmpdir")));
     }
+    private static final SimpleFileVisitor<Path> visitor = new SimpleFileVisitor<Path>() {
+        private final String prefix = "sqlite-" + getVersion();
+        private final String lckSuffix = ".lck";
+        
+        @Override
+        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+            if ((file != null) && !Files.isDirectory(file)) {
+                Path namePath = file.getFileName();
+                if (namePath != null) {
+                    String name = namePath.toString();
+                    if (name.startsWith(prefix) && !name.endsWith(lckSuffix)) {
+                        Path lckFile = file.resolveSibling(name + lckSuffix);
+                        if (!Files.exists(lckFile)) {
+                            Files.delete(file);
+                        }
+                    }
+                }
+            }
+            return FileVisitResult.CONTINUE;
+        }
+    };
 
     /**
      * Deleted old native libraries e.g. on Windows the DLL file is not removed
      * on VM-Exit (bug #80)
      */
     static void cleanup() {
-        String tempFolder = getTempDir().getAbsolutePath();
-        File dir = new File(tempFolder);
-
-        File[] nativeLibFiles = dir.listFiles(new FilenameFilter() {
-            private final String searchPattern = "sqlite-" + getVersion();
-            public boolean accept(File dir, String name) {
-                return name.startsWith(searchPattern) && !name.endsWith(".lck");
-            }
-        });
-        if(nativeLibFiles != null) {
-            for(File nativeLibFile : nativeLibFiles) {
-                File lckFile = new File(nativeLibFile.getName() + ".lck");
-                if(!lckFile.exists()) {
-                    try {
-                        nativeLibFile.delete();
-                    }
-                    catch(SecurityException e) {
-                        System.err.println("Failed to delete old native lib" + e.getMessage());
-                    }
-                }
-            }
+       
+        try {
+            String tempFolder = new File(System.getProperty("java.io.tmpdir")).getAbsolutePath();
+            Files.walkFileTree(Paths.get(tempFolder), EnumSet.of(FileVisitOption.FOLLOW_LINKS), 1, visitor);
+        } catch (IOException|SecurityException e) {
+            System.err.println("Failed to delete old native lib" + e.getMessage());
         }
     }
 
